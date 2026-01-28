@@ -59,8 +59,6 @@ int main() {
     auto startC = chrono::high_resolution_clock::now();
     // TODO (OpenMP): perform matrix multiplication A x B and write into C: C = A x B
     // YOUR OpenMP CODE HERE
-    auto endC = chrono::high_resolution_clock::now();
-    chrono::duration<double> elapsedC = endC - startC;
     #pragma omp parallel for
     for (int i = 0; i < n; ++i) {
         for (int k = 0; k < n; ++k) {
@@ -69,7 +67,10 @@ int main() {
             }
         }
     }
+    auto endC = chrono::high_resolution_clock::now();
 
+    chrono::duration<double> elapsedC = endC - startC;
+    
     std::cout << "The resulting matrix C = A x B is:\n";
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < n; ++j) {
@@ -81,15 +82,16 @@ int main() {
     auto startF = chrono::high_resolution_clock::now();
     // TODO (ParlayLib): perform matrix multiplication D x E and write into F: F = D x E
     // YOUR ParlayLib CODE HERE
+    // for (int i = 0; i < n; ++i) {
+    //     for (int k = 0; k < n; ++k) {
+    //         for (int j = 0; j < n; ++j) {
+    //             F[i][j] += D[i][k] * E[k][j];
+    //         }
+    //     }
+    // }
     auto endF = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsedF = endF - startF;
-    for (int i = 0; i < n; ++i) {
-        for (int k = 0; k < n; ++k) {
-            for (int j = 0; j < n; ++j) {
-                F[i][j] += D[i][k] * E[k][j];
-            }
-        }
-    }
+    
 
     std::cout << "The resulting matrix F = D x E is:\n";
     for (int i = 0; i < n; ++i) {
