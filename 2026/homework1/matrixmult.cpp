@@ -56,6 +56,14 @@ int main() {
 
     // TODO (OpenMP): perform matrix multiplication A x B and write into C: C = A x B
     // YOUR OpenMP CODE HERE
+    #pragma omp parallel for
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < n; ++k) {
+            for (int j = 0; j < n; ++j) {
+                C[i][j] += A[i][k] * B[k][j];
+            }
+        }
+    }
 
     std::cout << "The resulting matrix C = A x B is:\n";
     for (int i = 0; i < n; ++i) {
@@ -67,6 +75,13 @@ int main() {
 
     // TODO (ParlayLib): perform matrix multiplication D x E and write into F: F = D x E
     // YOUR ParlayLib CODE HERE
+    for (int i = 0; i < n; ++i) {
+        for (int k = 0; k < n; ++k) {
+            for (int j = 0; j < n; ++j) {
+                F[i][j] += D[i][k] * E[k][j];
+            }
+        }
+    }
 
     std::cout << "The resulting matrix F = D x E is:\n";
     for (int i = 0; i < n; ++i) {
@@ -75,6 +90,8 @@ int main() {
         }
         std::cout << "\n";
     }
+
+  
 
     return 0;
 }
