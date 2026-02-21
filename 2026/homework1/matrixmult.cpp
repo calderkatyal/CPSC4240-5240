@@ -62,11 +62,13 @@ int main() {
     #pragma omp parallel for
     for (int i = 0; i < n; ++i) {
         for (int k = 0; k < n; ++k) {
+            // #pragma omp parallel for <-- this would be to parallelize over j instead, but it's much slower
             for (int j = 0; j < n; ++j) {
                 C[i][j] += A[i][k] * B[k][j];
             }
         }
     }
+    
     auto endC = chrono::high_resolution_clock::now();
 
     chrono::duration<double> elapsedC = endC - startC;
@@ -82,13 +84,15 @@ int main() {
     auto startF = chrono::high_resolution_clock::now();
     // TODO (ParlayLib): perform matrix multiplication D x E and write into F: F = D x E
     // YOUR ParlayLib CODE HERE
-    // for (int i = 0; i < n; ++i) {
-    //     for (int k = 0; k < n; ++k) {
-    //         for (int j = 0; j < n; ++j) {
-    //             F[i][j] += D[i][k] * E[k][j];
-    //         }
-    //     }
-    // }
+    parlay::parallel_for(0, n, [&](int i) {
+        parlay::parallel_for(0, n, [&](int j) {
+            int sum = 0;
+            for (int k = 0; k < n; ++k) {
+                sum += D[i][k] * E[k][j];
+            }
+            F[i][j] = sum;
+        });
+    });
     auto endF = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsedF = endF - startF;
     
@@ -104,7 +108,6 @@ int main() {
     cout << "TIME_C:" << elapsedC.count() << endl;
     cout << "TIME_F:" << elapsedF.count() << endl;
 
-  
 
     return 0;
 }
