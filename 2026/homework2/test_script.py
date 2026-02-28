@@ -2,6 +2,7 @@ import subprocess
 import sys
 import re
 import os
+import statistics
 
 TEST_CASES = [
     {"name": "Small (100k ints)",     "N": 100000,     "threads": 4, "seed": 99},
@@ -10,6 +11,8 @@ TEST_CASES = [
     {"name": "Large (10M) - Serial",  "N": 10000000,   "threads": 1, "seed": 777},
     {"name": "Large (10M) - Parallel","N": 10000000,   "threads": 8, "seed": 777},
 ]
+
+NUM_ATTEMPTS=5
 
 def compile_code(cpp_file, exec_file):
     print(f"[*] Compiling {cpp_file}...")
@@ -60,10 +63,19 @@ def main():
     results_map = {}
 
     for test in TEST_CASES:
-        status, time_sec = run_test(exec_file, test)
+        overall_status = "PASS"
+        attempt_times = []
+        for iteration in range(NUM_ATTEMPTS):
+            status, time_sec = run_test(exec_file, test)
+            if status != "PASS":
+                overall_status = status
+                break
+            attempt_times.append(time_sec)
 
+        time_sec = statistics.median(attempt_times) if attempt_times else 0.0
         status_str = f"\033[92m{status}\033[0m" if status == "PASS" else f"\033[91m{status}\033[0m"
         print(f"{test['name']:<25} | {test['N']:<10} | {test['threads']:<7} | {status_str:<15} | {time_sec:.4f}s")
+
 
         key = f"{test['N']}_{test['seed']}"
         if key not in results_map:
