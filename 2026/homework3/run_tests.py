@@ -5,6 +5,14 @@ import time
 import random
 import re
 import os
+import heapq
+
+try:
+    import numpy as np
+    from scipy.spatial import cKDTree
+except ImportError:
+    np = None
+    cKDTree = None
 
 ###############################################################################
 # Helper Functions for File I/O and Number Formatting
@@ -71,48 +79,66 @@ def generate_queries(q, low=0, high=1000):
 # Comparison Helper
 ###############################################################################
 
+NUM_RE = r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?"
+SPLIT_RE = f"({NUM_RE})"
+
 def compare_lines(expected, actual):
     """
-    Compare two lines by splitting them into alternating non-numeric and numeric parts.
-    For numeric parts, values are compared with a ±0.1 tolerance (two-decimal notion).
-    For text parts, compare after stripping whitespace.
-
-    Returns a list of error messages (empty if no errors).
+    Compare text lines with tolerance for numeric fields.
+    For kNN lines, compare the returned neighbors as a set so tie ordering
+    differences do not trigger false negatives.
     """
-    # Use regex to capture numeric substrings
-    expected_parts = re.split(r"([-+]?[0-9]*\.?[0-9]+)", expected)
-    actual_parts   = re.split(r"([-+]?[0-9]*\.?[0-9]+)", actual)
-    errors = []
+    if expected.startswith("  kNN:"):
+        pattern = rf"\(dist2=({NUM_RE}), idx=(\d+)\)"
+        expected_neighbors = [
+            (float(dist), int(idx))
+            for dist, idx in re.findall(pattern, expected)
+        ]
+        actual_neighbors = [
+            (float(dist), int(idx))
+            for dist, idx in re.findall(pattern, actual)
+        ]
 
-    # Quick structure check
-    if len(expected_parts) != len(actual_parts):
-        errors.append(
-            "Line structure mismatch.\n"
-            f"Expected parts: {expected_parts}\nGot: {actual_parts}"
-        )
+        errors = []
+        for exp_dist, exp_idx in expected_neighbors:
+            if not any(
+                act_idx == exp_idx and abs(act_dist - exp_dist) <= 0.1
+                for act_dist, act_idx in actual_neighbors
+            ):
+                errors.append(f"Missing (dist2={exp_dist:.2f}, idx={exp_idx})")
+
+        for act_dist, act_idx in actual_neighbors:
+            if not any(
+                exp_idx == act_idx and abs(exp_dist - act_dist) <= 0.1
+                for exp_dist, exp_idx in expected_neighbors
+            ):
+                errors.append(f"Unexpected (dist2={act_dist:.2f}, idx={act_idx})")
+
         return errors
 
-    # Compare each segment in turn
+    expected_parts = re.split(SPLIT_RE, expected)
+    actual_parts = re.split(SPLIT_RE, actual)
+    if len(expected_parts) != len(actual_parts):
+        return [
+            "Line structure mismatch.\n"
+            f"Expected parts: {expected_parts}\nGot: {actual_parts}"
+        ]
+
+    errors = []
     for idx, (exp, act) in enumerate(zip(expected_parts, actual_parts)):
-        # Even indices are text segments, odd indices are numeric
         if idx % 2 == 0:
-            # Compare text segments after stripping
             if exp.strip() != act.strip():
                 errors.append(
                     f"Mismatch in text segment:\nExpected: '{exp.strip()}'\nGot: '{act.strip()}'"
                 )
         else:
-            # Compare numeric segments with tolerance ±0.1
             try:
                 exp_val = float(exp)
                 act_val = float(act)
             except ValueError:
-                errors.append(
-                    f"Error parsing numbers: Expected '{exp}', Got '{act}'"
-                )
+                errors.append(f"Error parsing numbers: Expected '{exp}', Got '{act}'")
                 continue
 
-            # If the difference is more than 0.1, fail
             diff = abs(exp_val - act_val)
             if diff > 0.1:
                 errors.append(
@@ -126,33 +152,86 @@ def compare_lines(expected, actual):
 # Grading Logic
 ###############################################################################
 
-def compute_expected_output(data_str, query_str, k):
+def parse_points_numpy(s):
     """
-    Given data and query strings plus k, compute the expected output lines.
-    Example logic that prints all queries, each with its k nearest neighbors.
-    Adjust to match your program's logic as needed.
+    Parse point data into an (N, 2) NumPy array using a whitespace parser in C.
     """
-    data_points  = parse_points(data_str)
+    stripped = s.strip()
+    if not stripped:
+        return np.empty((0, 2), dtype=float)
+
+    values = np.fromstring(stripped, sep=" ")
+    if values.size == 0:
+        return np.empty((0, 2), dtype=float)
+
+    n = int(values[0])
+    coords = values[1:]
+    if coords.size != n * 2:
+        raise ValueError(f"Expected {n * 2} coordinates, got {coords.size}")
+    return coords.reshape(n, 2)
+
+def compute_expected_output_bruteforce(data_str, query_str, k):
+    """
+    Exact fallback used when SciPy is unavailable.
+    """
+
+    print("[Warning] SciPy not available, using brute-force expected output computation. This will be slow on large tests.")
+    data_points = parse_points(data_str)
     query_points = parse_points(query_str)
     out_lines = []
 
     for q_idx, (qx, qy) in enumerate(query_points):
-        # Compute distances from query (qx, qy) to each data point
         dists = []
         for i, (dx, dy) in enumerate(data_points):
-            dd = (qx - dx)**2 + (qy - dy)**2
+            dd = (qx - dx) ** 2 + (qy - dy) ** 2
             dists.append((dd, i))
 
-        # sort by distance then index
-        dists.sort(key=lambda x: (x[0], x[1]))
-        neighbors = dists[:k]  # take k nearest
-
-        # Build output lines
+        neighbors = heapq.nsmallest(k, dists, key=lambda x: (x[0], x[1]))
         out_lines.append(f"Query {q_idx}: ({format_number(qx)}, {format_number(qy)})")
-        n_line = "  kNN: " + "".join(
-            f"(dist2={format_number(dist)}, idx={idx}) " for dist, idx in neighbors
+        out_lines.append(
+            "  kNN: " + "".join(
+                f"(dist2={format_number(dist)}, idx={idx}) "
+                for dist, idx in neighbors
+            )
         )
-        out_lines.append(n_line)
+
+    return out_lines
+
+def compute_expected_output(data_str, query_str, k):
+    """
+    Compute the expected output lines.
+    Prefer a cKDTree-based implementation so the grader runtime is not dominated
+    by the Python reference solution on the larger tests.
+    """
+    if np is None or cKDTree is None:
+        return compute_expected_output_bruteforce(data_str, query_str, k)
+
+    data_points = parse_points_numpy(data_str)
+    query_points = parse_points_numpy(query_str)
+    out_lines = []
+
+    if len(query_points) == 0:
+        return out_lines
+
+    tree = cKDTree(data_points)
+    dists, idxs = tree.query(query_points, k=k)
+    if k == 1:
+        dists = dists[:, None]
+        idxs = idxs[:, None]
+
+    for q_idx, (qx, qy) in enumerate(query_points):
+        neighbors = [
+            (dists[q_idx, j] ** 2, int(idxs[q_idx, j]))
+            for j in range(k)
+        ]
+        neighbors.sort(key=lambda x: (x[0], x[1]))
+        out_lines.append(f"Query {q_idx}: ({format_number(qx)}, {format_number(qy)})")
+        out_lines.append(
+            "  kNN: " + "".join(
+                f"(dist2={format_number(dist)}, idx={idx}) "
+                for dist, idx in neighbors
+            )
+        )
 
     return out_lines
 
@@ -312,4 +391,3 @@ def run_tests():
 
 if __name__ == "__main__":
     run_tests()
-

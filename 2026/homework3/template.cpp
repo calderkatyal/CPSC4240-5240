@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <limits>
 
+#include <iomanip>
 // Include ParlayLib (adjust the path if needed)
 #include "parlaylib/include/parlay/primitives.h"
 #include "parlaylib/include/parlay/parallel.h"
@@ -57,39 +58,52 @@ KDNode* build_kd_tree(
     int depth = 0
 ) {
   // 1) Base cases: if 0 or 1 points, create a leaf node or return
-  if (indices.size() == 0) return nullptr;
-  if (indices.size() == 1) {
-    KDNode* node = new KDNode(); 
-    node->axis = depth % 2; 
-    node->pointIndex = indices[0]; 
-    node->splitValue = (node->axis == 0) ? points[indices[0]].x : points[indices[0]].y;
-    return node;
+  size_t n = indices.size();
+  if (n == 0) return nullptr;
+
+  if (n == 1) {
+    KDNode* leaf = new KDNode();
+    leaf->pointIndex = indices[0];
+    leaf->axis = depth % 2;
+    leaf->splitValue = (leaf->axis == 0) ? points[indices[0]].x : points[indices[0]].y;
+    return leaf;
   }
 
   // 2) Determine axis = (depth % 2)
-  int axis = depth % 2; 
+  int axis = depth % 2;
 
   // 3) Sort indices by that axis (x or y)
-  std::sort(indices.begin(), indices.end(), 
-    [&](int a, int b) {
-      if (axis == 0) return points[a].x < points[b].x;
-      else           return points[a].y < points[b].y;
-    });
+  // Use std::nth_element for O(n) median selection — faster than full sort
+  size_t mid = n / 2;
+  int* base = indices.begin();
+  if (axis == 0) {
+    std::nth_element(base, base + mid, base + n,
+      [&](int a, int b) { return points[a].x < points[b].x; });
+  } else {
+    std::nth_element(base, base + mid, base + n,
+      [&](int a, int b) { return points[a].y < points[b].y; });
+  }
+
   // 4) Find median index
-  int mid = (int)indices.size() / 2;
+  int medianIdx = base[mid];
+
   // 5) Create a node with that pivot
   KDNode* node = new KDNode();
   node->axis = axis;
-  node->pointIndex = indices[mid];
-  node->splitValue = (axis == 0) ? points[indices[mid]].x : points[indices[mid]].y;
+  node->splitValue = (axis == 0) ? points[medianIdx].x : points[medianIdx].y;
+  node->pointIndex = medianIdx;
+
   // 6) Recurse left and right in parallel
+  auto leftSlice  = indices.cut(0, mid);
+  auto rightSlice = indices.cut(mid + 1, n);
+
   parlay::par_do(
-    [&]() { node->left  = build_kd_tree(indices.cut(0, mid),                points, depth + 1); },
-    [&]() { node->right = build_kd_tree(indices.cut(mid + 1, indices.size()), points, depth + 1); }
-  );
+      [&]() { node->left  = build_kd_tree(leftSlice,  points, depth + 1); },
+      [&]() { node->right = build_kd_tree(rightSlice, points, depth + 1); }
+    );
+
   return node;
 }
-
 // KNN Helper: holds a local max-heap of size k
 class KNNHelper {
 public:
@@ -101,22 +115,31 @@ public:
   // Perform recursive search
   void search(const KDNode* node, const Point2D& q) {
     // TODO:
+    if (node == nullptr) return;
+
     // 1) compute dist2 from q to node->pointIndex
-    if (!node) return;
     double dist2 = squared_distance(q, points[node->pointIndex]);
+
     // 2) update_best if needed
     update_best(dist2, node->pointIndex);
+
     // 3) compare q's coordinate to splitValue
     double diff = (node->axis == 0) ? (q.x - node->splitValue) : (q.y - node->splitValue);
-    const KDNode* near_side = (diff <= 0) ? node->left  : node->right;
-    const KDNode* far_side  = (diff <= 0) ? node->right : node->left;
+    double diff2 = diff * diff;
+
     // 4) search near side, possibly search far side if needed
-    search(near_side, q);
-    if ((int)best.size() < k || diff * diff < best[0].dist) {
-      search(far_side, q);
+    // Near side = side q falls on; far side is other
+    const KDNode* near_child = (diff <= 0.0) ? node->left : node->right;
+    const KDNode* far_child = (diff <= 0.0) ? node->right : node->left;
+
+    search(near_child, q);
+
+    // We will only search far side if splitting plane closer than current worst,
+    // or if we haven't found k neighbors yet
+    if ((int)best.size() < k || diff2 < best[0].dist) {
+      search(far_child, q);
     }
   }
-
   // Return final results sorted by ascending distance
   parlay::sequence<DistIndex> get_results() const {
     parlay::sequence<DistIndex> result(best.begin(), best.end());
@@ -135,12 +158,13 @@ private:
   void update_best(double dist2, int idx) {
     // TODO: use a max-heap for best and update best with dist2 and idx
     if ((int)best.size() < k) {
-      best.push_back(DistIndex(dist2, idx));
+      best.emplace_back(dist2, idx);
+      // Re-heapify
       std::push_heap(best.begin(), best.end());
     } else if (dist2 < best[0].dist) {
+      // Replace worst (largest) element
       std::pop_heap(best.begin(), best.end());
-      best.pop_back();
-      best.push_back(DistIndex(dist2, idx));
+      best.back() = DistIndex(dist2, idx);
       std::push_heap(best.begin(), best.end());
     }
   }
@@ -167,20 +191,21 @@ knn_search_all(const KDNode* root,
 // A function to load points from a file
 parlay::sequence<Point2D> load_points_from_file(const std::string &filename) {
   // TODO: open file, read N, read N lines of x y into a parlay::sequence
-  std::ifstream in(filename);
-  if (!in) {
-    std::cerr << "Error: could not open " << filename << "\n";
+  std::ifstream fin(filename);
+  if (!fin.is_open()) {
+    std::cerr << "ERROR: cannot open " << filename << "\n";
     return {};
   }
-  int n;
-  in >> n;
-  parlay::sequence<Point2D> pts(n);
-  for (int i = 0; i < n; i++) {
-    in >> pts[i].x >> pts[i].y;
+
+  int N;
+  fin >> N;
+  parlay::sequence<Point2D> pts(N);
+  for (int i = 0; i < N; i++) {
+    fin >> pts[i].x >> pts[i].y;
   }
+  fin.close();
   return pts;
 }
-
 int main(int argc, char** argv) {
   if (argc < 4) {
     std::cerr << "Usage: " << argv[0]
